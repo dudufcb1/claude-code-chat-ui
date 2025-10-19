@@ -66,6 +66,10 @@ const getHtml = (isTelemetryEnabled: boolean) => `<!DOCTYPE html>
 					<span id="thinkingModeLabel" onclick="toggleThinkingMode()">Thinking Mode</span>
 					<div class="mode-switch" id="thinkingModeSwitch" onclick="toggleThinkingMode()"></div>
 				</div>
+				<div class="mode-toggle">
+					<span onclick="toggleParallelAgents()" title="Parallelization with subagents for the next task (if helpful)">Parallelization (Subagents)</span>
+					<div class="mode-switch" id="parallelAgentsSwitch" onclick="toggleParallelAgents()" title="Parallelization with subagents for the next task (if helpful)"></div>
+				</div>
 			</div>
 			<div class="textarea-container">
 				<div class="textarea-wrapper">
@@ -78,6 +82,16 @@ const getHtml = (isTelemetryEnabled: boolean) => `<!DOCTYPE html>
 									<path d="M1 2.5l3 3 3-3"></path>
 								</svg>
 							</button>
+							<button class="instance-selector" id="instanceSelector" onclick="showInstanceSelector()" title="Select Claude instance">
+								<span id="selectedInstanceDisplay">Default</span>
+								<svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor">
+									<path d="M1 2.5l3 3 3-3"></path>
+								</svg>
+							</button>
+							<div class="indexing-status-badge" id="indexingStatusBadge" title="Codebase indexing status" style="display: none;">
+								<span class="indexing-icon">●</span>
+								<span id="indexingStatusText">Loading...</span>
+							</div>
 							<button class="tools-btn" onclick="showMCPModal()" title="Configure MCP servers">
 								MCP
 								<svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor">
@@ -300,6 +314,22 @@ const getHtml = (isTelemetryEnabled: boolean) => `<!DOCTYPE html>
 					</div>
 				</div>
 
+				<h3 style="margin-top: 24px; margin-bottom: 16px; font-size: 14px; font-weight: 600;">Codebase CLI</h3>
+				<div class="settings-group">
+					<div class="tool-item" style="justify-content: space-between;">
+						<div>
+							<div style="font-weight:600;">Control the local code indexer</div>
+							<div style="font-size:11px; color: var(--vscode-descriptionForeground);">Start watcher, view stats, history, and reset</div>
+						</div>
+						<div style="display:flex; gap:8px;">
+							<button class="btn" id="codebaseStartBtn" title="Start indexer" onclick="codebaseCmd('start')">Start</button>
+							<button class="btn outlined" onclick="codebaseCmd('stats')">Stats</button>
+							<button class="btn outlined" onclick="codebaseCmd('index-history')">History</button>
+							<button class="btn deny" onclick="codebaseCmd('full-reset')">Full reset</button>
+						</div>
+					</div>
+				</div>
+
 				<h3 style="margin-top: 24px; margin-bottom: 16px; font-size: 14px; font-weight: 600;">Permissions</h3>
 				<div>
 					<p style="font-size: 11px; color: var(--vscode-descriptionForeground); margin: 0;">
@@ -395,6 +425,31 @@ const getHtml = (isTelemetryEnabled: boolean) => `<!DOCTYPE html>
 						</button>
 					</label>
 				</div>
+			</div>
+		</div>
+	</div>
+
+	<!-- Instance selector modal -->
+	<div id="instanceModal" class="tools-modal" style="display: none;">
+		<div class="tools-modal-content" style="width: 500px;">
+			<div class="tools-modal-header">
+				<span>Select Claude Instance</span>
+				<button class="tools-close-btn" onclick="hideInstanceModal()">✕</button>
+			</div>
+			<div class="model-explanatory-text">
+				Each instance uses a different Claude configuration directory (~/.claude*) with separate authentication, settings, and history.
+			</div>
+			<div class="tools-list" id="instancesList">
+				<!-- Instances will be dynamically populated -->
+				<div class="loading-message">Loading instances...</div>
+			</div>
+			<div class="instance-modal-footer">
+				<button class="rescan-btn" onclick="rescanInstances()" title="Refresh instance list">
+					<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M13.65 2.35a7.5 7.5 0 0 0-11.3 0L1 3.7V.5H0v4.5h4.5V4H2.1l1.35-1.35a6 6 0 1 1-.9 8.4l-.8.6a7 7 0 1 0 11.9-5.3z"/>
+					</svg>
+					Rescan
+				</button>
 			</div>
 		</div>
 	</div>

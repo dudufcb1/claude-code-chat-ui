@@ -1411,6 +1411,150 @@ const styles = `
         opacity: 1;
     }
 
+    .instance-selector {
+        background-color: rgba(70, 130, 180, 0.15);
+        color: var(--vscode-foreground);
+        border: none;
+        padding: 3px 7px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 11px;
+        font-weight: 500;
+        transition: all 0.2s ease;
+        opacity: 0.9;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+    }
+
+    .instance-selector:hover {
+        background-color: rgba(70, 130, 180, 0.25);
+        opacity: 1;
+    }
+
+    .instance-selector span:first-child {
+        opacity: 0.7;
+        font-size: 10px;
+    }
+
+    .instance-selector span:last-child {
+        font-weight: 600;
+    }
+
+    .instance-badge {
+        display: inline-block;
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-size: 9px;
+        font-weight: 600;
+        margin-left: 6px;
+        text-transform: uppercase;
+    }
+
+    .yolo-badge {
+        background-color: rgba(255, 69, 0, 0.3);
+        color: #ff4500;
+        border: 1px solid rgba(255, 69, 0, 0.5);
+    }
+
+    .instance-modal-footer {
+        display: flex;
+        justify-content: flex-end;
+        padding: 12px 16px;
+        border-top: 1px solid var(--vscode-panel-border);
+    }
+
+    .rescan-btn {
+        background-color: rgba(128, 128, 128, 0.15);
+        color: var(--vscode-foreground);
+        border: none;
+        padding: 6px 12px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 11px;
+        font-weight: 500;
+        transition: all 0.2s ease;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+
+    .rescan-btn:hover {
+        background-color: rgba(128, 128, 128, 0.25);
+    }
+
+    .loading-message {
+        padding: 20px;
+        text-align: center;
+        color: var(--vscode-descriptionForeground);
+        font-size: 12px;
+    }
+
+    @keyframes fadeInOut {
+        0% { opacity: 0; transform: translateY(20px); }
+        10% { opacity: 1; transform: translateY(0); }
+        90% { opacity: 1; transform: translateY(0); }
+        100% { opacity: 0; transform: translateY(-20px); }
+    }
+
+    .indexing-status-badge {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 3px 7px;
+        border-radius: 4px;
+        font-size: 10px;
+        font-weight: 500;
+        transition: all 0.2s ease;
+    }
+
+    .indexing-status-badge .indexing-icon {
+        font-size: 12px;
+        line-height: 1;
+    }
+
+    .status-watching {
+        background-color: rgba(16, 185, 129, 0.15);
+        color: #10b981;
+        border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .status-watching .indexing-icon {
+        animation: pulse 2s ease-in-out infinite;
+    }
+
+    .status-indexing {
+        background-color: rgba(59, 130, 246, 0.15);
+        color: #3b82f6;
+        border: 1px solid rgba(59, 130, 246, 0.3);
+    }
+
+    .status-indexing .indexing-icon {
+        animation: spin 1s linear infinite;
+    }
+
+    .status-idle {
+        background-color: rgba(156, 163, 175, 0.15);
+        color: #9ca3af;
+        border: 1px solid rgba(156, 163, 175, 0.3);
+    }
+
+    .status-error {
+        background-color: rgba(239, 68, 68, 0.15);
+        color: #ef4444;
+        border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+
+    @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+    }
+
+    @keyframes spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+    }
+
     .tools-btn {
         background-color: rgba(128, 128, 128, 0.15);
         color: var(--vscode-foreground);

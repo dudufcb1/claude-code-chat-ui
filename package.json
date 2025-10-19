@@ -170,6 +170,11 @@
           "default": "/usr/local/bin/claude",
           "description": "Path to Claude executable in the WSL distribution"
         },
+        "claudeCodeChat.codebase.path": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the 'codebase' CLI. Leave empty to auto-detect via PATH or fallback."
+        },
         "claudeCodeChat.thinking.intensity": {
           "type": "string",
           "enum": [

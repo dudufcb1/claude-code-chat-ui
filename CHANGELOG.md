@@ -7,6 +7,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 ## [1.0.7] - 2025-10-01
 
 ### 🚀 Features Added
+- Local codebase indexer integration with live status badge and Settings controls (Start/Stats/History/Full reset)
+- Start button UX: auto-disable and contextual tooltip based on indexing status
+- New toggle: Parallelization (Subagents) — prepends guidance for next message only
 - **Slash Commands Update**: Added 4 new slash commands to the commands modal
   - `/add-dir` - Add additional working directories
   - `/agents` - Manage custom AI subagents for specialized tasks
@@ -20,6 +23,13 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
   - `/cost` - Added note about cost tracking guide for subscription-specific details
   - `/status` - Expanded description to mention version, model, account, and connectivity
   - `/terminal-setup` - Added clarification about iTerm2 and VSCode only support
+
+### Maintenance
+- Built VSIX package for version 1.0.7 locally.
+  - Commands executed: `npm ci`, `npm run compile`, `npx vsce package`
+  - Output artifact: `claude-code-chat-1.0.7.vsix` (~1.3 MB) in repo root
+  - Note: npm reported 5 vulnerabilities (3 low, 1 high, 1 critical) but build succeeded
+- Local git maintenance: removed remote named `origin` to reconfigure repository remotes.
 
 ## [1.0.6] - 2025-08-26
 

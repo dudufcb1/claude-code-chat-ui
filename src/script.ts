@@ -15,6 +15,7 @@ const getScript = (isTelemetryEnabled: boolean) => `<script>
 		let selectedFileIndex = -1;
 		let planModeEnabled = false;
 		let thinkingModeEnabled = false;
+		let parallelAgentsEnabled = false;
 
 		function shouldAutoScroll(messagesDiv) {
 			const threshold = 100; // pixels from bottom
@@ -719,7 +720,8 @@ const getScript = (isTelemetryEnabled: boolean) => `<script>
 					type: 'sendMessage',
 					text: text,
 					planMode: planModeEnabled,
-					thinkingMode: thinkingModeEnabled
+					thinkingMode: thinkingModeEnabled,
+					parallelAgents: parallelAgentsEnabled
 				});
 				
 				messageInput.value = '';
@@ -737,6 +739,7 @@ const getScript = (isTelemetryEnabled: boolean) => `<script>
 		}
 
 		function toggleThinkingMode() {
+
 			thinkingModeEnabled = !thinkingModeEnabled;
 			
 			if (thinkingModeEnabled) {
@@ -755,6 +758,19 @@ const getScript = (isTelemetryEnabled: boolean) => `<script>
 				if (toggleLabel) {
 					toggleLabel.textContent = 'Thinking Mode';
 				}
+			}
+		}
+
+		function toggleParallelAgents() {
+			parallelAgentsEnabled = !parallelAgentsEnabled;
+			const switchElement = document.getElementById('parallelAgentsSwitch');
+			if (parallelAgentsEnabled) {
+				switchElement.classList.add('active');
+				if (typeof showToast === 'function') {
+					showToast('Parallelization with subagents enabled for the next message');
+				}
+			} else {
+				switchElement.classList.remove('active');
 			}
 		}
 
@@ -1401,6 +1417,9 @@ const getScript = (isTelemetryEnabled: boolean) => `<script>
 
 		// Model selector functions
 		let currentModel = 'opus'; // Default model
+		let currentInstance = 'default'; // Default instance
+		let availableInstances = ['default']; // Available instances
+		let isProcessActive = false; // Track if Claude process is running
 
 		function showModelSelector() {
 			document.getElementById('modelModal').style.display = 'flex';
@@ -1413,6 +1432,210 @@ const getScript = (isTelemetryEnabled: boolean) => `<script>
 
 		function hideModelModal() {
 			document.getElementById('modelModal').style.display = 'none';
+		}
+
+		// Instance selector functions
+		function showInstanceSelector() {
+			document.getElementById('instanceModal').style.display = 'flex';
+			renderInstancesList();
+		}
+
+		function hideInstanceModal() {
+			document.getElementById('instanceModal').style.display = 'none';
+		}
+
+		function renderInstancesList() {
+			const listContainer = document.getElementById('instancesList');
+			if (!listContainer) return;
+
+			listContainer.innerHTML = '';
+
+			if (!availableInstances || availableInstances.length === 0) {
+				listContainer.innerHTML = '<div class="loading-message">No instances found</div>';
+				return;
+			}
+
+			availableInstances.forEach(instance => {
+				// Handle both object format (new) and string format (legacy)
+				const instanceName = typeof instance === 'object' ? instance.name : instance;
+				const displayName = typeof instance === 'object' ? instance.displayName :
+					(instance === 'default' ? 'Default (no CLAUDE_CONFIG_DIR)' : instance.replace('claude', 'Claude '));
+				const configPath = typeof instance === 'object' ? instance.path :
+					(instance === 'default' ? '~/.claude' : '~/.config/' + instance);
+
+				const item = document.createElement('div');
+				item.className = 'tool-item';
+				item.onclick = () => selectInstance(instanceName);
+
+				const description = 'Config: ' + configPath;
+
+				// Check if instance has YOLO flag
+				const isYolo = instanceName.includes('yolo');
+				const badge = isYolo ? '<span class="instance-badge yolo-badge">YOLO</span>' : '';
+
+				item.innerHTML = \`
+					<input type="radio" name="instance" id="instance-\${instanceName}"
+						   value="\${instanceName}" \${instanceName === currentInstance ? 'checked' : ''}>
+					<label for="instance-\${instanceName}">
+						<div class="model-title">\${displayName} \${badge}</div>
+						<div class="model-description">\${description}</div>
+					</label>
+				\`;
+
+				listContainer.appendChild(item);
+			});
+		}
+
+		function selectInstance(instance) {
+			// Check if process is active
+			if (isProcessActive) {
+				const confirmed = confirm(
+					'Changing instance will require a session restart. The current conversation may be affected. Continue?'
+				);
+				if (!confirmed) {
+					hideInstanceModal();
+					return;
+				}
+			}
+
+			currentInstance = instance;
+
+			// Update display
+			const displayName = instance === 'default'
+				? 'Default'
+				: instance.replace('claude', '').replace(/^(.)/g, (match) => match.toUpperCase());
+
+			const displayElement = document.getElementById('selectedInstanceDisplay');
+			if (displayElement) {
+				displayElement.textContent = displayName;
+			}
+
+			// Send to extension
+			vscode.postMessage({
+				type: 'selectInstance',
+				instance: instance
+			});
+
+			// Show toast notification
+			showToast('Using instance: ' + displayName);
+
+			// Close modal
+			hideInstanceModal();
+		}
+
+		function rescanInstances() {
+			const listContainer = document.getElementById('instancesList');
+			if (listContainer) {
+				listContainer.innerHTML = '<div class="loading-message">Rescanning...</div>';
+			}
+
+			// Request rescan from backend
+			vscode.postMessage({
+				type: 'rescanInstances'
+			});
+		}
+
+		function showToast(message) {
+			// Simple toast notification
+			const toast = document.createElement('div');
+			toast.className = 'toast-notification';
+			toast.textContent = message;
+			toast.style.cssText = \`
+				position: fixed;
+				bottom: 20px;
+				right: 20px;
+				background: rgba(0, 120, 212, 0.9);
+				color: white;
+				padding: 12px 20px;
+				border-radius: 4px;
+				font-size: 13px;
+				z-index: 10000;
+				animation: fadeInOut 3s ease-in-out;
+			\`;
+
+			document.body.appendChild(toast);
+
+			setTimeout(() => {
+				if (toast.parentNode) {
+					toast.parentNode.removeChild(toast);
+				}
+			}, 3000);
+		}
+
+		/**
+		 * Update indexing status badge
+		 */
+		function updateIndexingStatusBadge(data) {
+			// Update Start button state and tooltip based on indexer status
+			const startBtn = document.getElementById('codebaseStartBtn');
+			if (startBtn) {
+				if (data.state === 'watching' || data.state === 'indexing') {
+					startBtn.disabled = true;
+					startBtn.title = data.state === 'watching' ? 'Indexer running (watching changes)' : 'Indexing in progress';
+				} else if (data.state === 'error') {
+					startBtn.disabled = false;
+					startBtn.title = 'Retry start (last state: error)';
+				} else {
+					startBtn.disabled = false;
+					startBtn.title = 'Start indexer';
+				}
+			}
+
+			const badge = document.getElementById('indexingStatusBadge');
+			const icon = badge.querySelector('.indexing-icon');
+			const text = document.getElementById('indexingStatusText');
+
+			if (!badge || !icon || !text) return;
+
+			// Show badge if we have indexing info
+			if (data.state === 'not-found') {
+				badge.style.display = 'none';
+				return;
+			}
+
+			badge.style.display = 'flex';
+
+			// Update based on state
+			switch (data.state) {
+				case 'watching':
+					badge.className = 'indexing-status-badge status-watching';
+					icon.textContent = '●';
+					text.textContent = \`\${data.uniqueFiles || 0} files\`;
+					badge.title = data.message || 'Codebase indexed and watching';
+					// Show a one-time toast when we detect transition to watching (successful start)
+					if (!window.__indexerWasWatching && typeof showToast === 'function') {
+						showToast('Indexer is running');
+					}
+					window.__indexerWasWatching = true;
+					break;
+
+				case 'indexing':
+					badge.className = 'indexing-status-badge status-indexing';
+					icon.textContent = '◐';
+					text.textContent = 'Indexing...';
+					badge.title = data.message || 'Indexing in progress';
+					break;
+
+				case 'idle':
+					badge.className = 'indexing-status-badge status-idle';
+					icon.textContent = '○';
+					text.textContent = 'Idle';
+					badge.title = data.message || 'Indexing idle';
+					break;
+
+				case 'error':
+					badge.className = 'indexing-status-badge status-error';
+					icon.textContent = '✕';
+					text.textContent = 'Error';
+					badge.title = data.message || 'Indexing error';
+					break;
+
+				default:
+					badge.className = 'indexing-status-badge status-unknown';
+					icon.textContent = '?';
+					text.textContent = data.state;
+					badge.title = data.message || 'Unknown status';
+			}
 		}
 
 		// Slash commands modal functions
@@ -1693,6 +1916,21 @@ const getScript = (isTelemetryEnabled: boolean) => `<script>
 			hideModelModal();
 		}
 
+		function codebaseCmd(cmd) {
+			if (cmd === 'start') {
+				const startBtn = document.getElementById('codebaseStartBtn');
+				if (startBtn) {
+					startBtn.disabled = true;
+					startBtn.title = 'Starting indexer...';
+				}
+				// Optional: quick user feedback
+				if (typeof showToast === 'function') {
+					showToast('Starting indexer...');
+				}
+			}
+			vscode.postMessage({ type: 'codebaseCommand', cmd });
+		}
+
 		function selectModel(model, fromBackend = false) {
 			currentModel = model;
 			
@@ -1883,6 +2121,7 @@ const getScript = (isTelemetryEnabled: boolean) => `<script>
 					
 				case 'setProcessing':
 					isProcessing = message.data.isProcessing;
+					isProcessActive = message.data.isProcessing; // Track for instance switching
 					if (isProcessing) {
 						startRequestTimer(message.data.requestStartTime);
 						showStopButton();
@@ -2090,6 +2329,47 @@ const getScript = (isTelemetryEnabled: boolean) => `<script>
 					// Update the UI with the current model
 					currentModel = message.model;
 					selectModel(message.model, true);
+					break;
+				case 'instancesData':
+					// Update available instances and current selection
+					availableInstances = message.data.available || [{ name: 'default', displayName: 'Default', path: '~/.claude', flags: [], isValid: true }];
+					currentInstance = message.data.selected || 'default';
+
+					// Update display - find the current instance object
+					let displayName = 'Default';
+					if (availableInstances.length > 0) {
+						const currentInstanceObj = availableInstances.find(inst =>
+							(typeof inst === 'object' ? inst.name : inst) === currentInstance
+						);
+						if (currentInstanceObj) {
+							displayName = typeof currentInstanceObj === 'object'
+								? currentInstanceObj.displayName
+								: (currentInstance === 'default' ? 'Default' : currentInstance.replace('claude', '').replace(/^(.)/g, (match) => match.toUpperCase()));
+						}
+					}
+
+					const displayElement = document.getElementById('selectedInstanceDisplay');
+					if (displayElement) {
+						displayElement.textContent = displayName;
+					}
+
+					// Re-render list if modal is open
+					const modal = document.getElementById('instanceModal');
+					if (modal && modal.style.display === 'flex') {
+						renderInstancesList();
+					}
+					break;
+				case 'indexingStatus':
+					// Update indexing status badge
+					updateIndexingStatusBadge(message.data);
+					break;
+				case 'instanceChanged':
+					// Backend confirmed instance change
+					currentInstance = message.data.name;
+					const displayElement2 = document.getElementById('selectedInstanceDisplay');
+					if (displayElement2) {
+						displayElement2.textContent = message.data.displayName;
+					}
 					break;
 				case 'terminalOpened':
 					// Display notification about checking the terminal

@@ -25,6 +25,10 @@ Added a settings interface to the Claude Code Chat webview that allows users to 
 - Added methods:
   - `_sendCurrentSettings()` - Sends current settings to webview
   - `_updateSettings()` - Updates VS Code configuration
+  - `_checkIndexingStatus()` - Reads .codebase/state.json every ~3s and updates the UI badge
+  - `_handleCodebaseCommand()` - Handles Start/Stats/History/Full reset
+- Message composition:
+  - Prepends Plan First / Thinking (by intensity) / Parallelization (Subagents) as toggled
 
 ### 3. Configuration (package.json)
 - Already has WSL configuration properties defined:

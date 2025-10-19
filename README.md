@@ -92,6 +92,11 @@ Fork notice
 - Real-time tool execution with formatted results
 - Process control - start, stop, and monitor operations
 - Smart permission system for secure tool execution
+- Local codebase indexer integration:
+  - Live status badge (watching/indexing/idle/error) reading .codebase/state.json every 3s
+  - Settings → Codebase CLI: Start, Stats, History, Full reset
+  - Start button auto-disables on success; tooltips reflect current state
+- Parallelization (Subagents) toggle for the next message only (prepends guidance)
 
 ### 🎨 **VS Code Integration**
 - Native theming that matches your editor

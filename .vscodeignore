@@ -11,4 +11,5 @@ vsc-extension-quickstart.md
 **/.vscode-test.*
 backup
 .claude
+.env
 claude-code-chat-permissions-mcp/**

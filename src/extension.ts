@@ -8,6 +8,46 @@ const exec = util.promisify(cp.exec);
 
 export function activate(context: vscode.ExtensionContext) {
 	console.log('Claude Code Chat extension is being activated!');
+
+	// Attempt to auto-start codebase watcher for the workspace
+	try {
+		const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+		if (workspaceFolder) {
+			const provider = new ClaudeChatProvider(context.extensionUri, context);
+			provider['startCodebaseWatcher']?.();
+		}
+	} catch (e) {
+		console.warn('codebase auto-start failed:', (e as any)?.message || e);
+	}
+
+	// Load workspace .env and map DISABLE_WSL -> CLAUDE_CODE_CHAT_DISABLE_WSL
+	try {
+		const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+		if (workspaceFolder) {
+			const envPath = path.join(workspaceFolder.uri.fsPath, '.env');
+			const fs = require('fs');
+			if (fs.existsSync(envPath)) {
+				const content: string = fs.readFileSync(envPath, 'utf8');
+				for (const line of content.split(/\r?\n/)) {
+					const trimmed = line.trim();
+					if (!trimmed || trimmed.startsWith('#')) continue;
+					const idx = trimmed.indexOf('=');
+					if (idx === -1) continue;
+					const key = trimmed.slice(0, idx).trim();
+					const value = trimmed.slice(idx + 1).trim();
+					if (key === 'DISABLE_WSL') {
+						const v = value.toLowerCase();
+						if (v === '1' || v === 'true' || v === 'yes') {
+							process.env.CLAUDE_CODE_CHAT_DISABLE_WSL = '1';
+						}
+					}
+				}
+			}
+		}
+	} catch (e: any) {
+		console.warn('Failed to load .env for DISABLE_WSL:', e?.message || e);
+	}
+
 	const provider = new ClaudeChatProvider(context.extensionUri, context);
 
 	const disposable = vscode.commands.registerCommand('claude-code-chat.openChat', (column?: vscode.ViewColumn) => {
@@ -25,7 +65,11 @@ export function activate(context: vscode.ExtensionContext) {
 
 	// Listen for configuration changes
 	const configChangeDisposable = vscode.workspace.onDidChangeConfiguration(event => {
-		if (event.affectsConfiguration('claudeCodeChat.wsl')) {
+		// Ignore WSL config changes when disabled via env or not on Windows
+		const wslDisabledEnv = (process.env.CLAUDE_CODE_CHAT_DISABLE_WSL || '').toLowerCase();
+		const wslGloballyDisabled = wslDisabledEnv === '1' || wslDisabledEnv === 'true' || wslDisabledEnv === 'yes';
+		const isWindows = process.platform === 'win32';
+		if (!wslGloballyDisabled && isWindows && event.affectsConfiguration('claudeCodeChat.wsl')) {
 			console.log('WSL configuration changed, starting new session');
 			provider.newSessionOnConfigChange();
 		}
@@ -129,6 +173,28 @@ class ClaudeChatProvider {
 	private _isProcessing: boolean | undefined;
 	private _draftMessage: string = '';
 
+	// Output channel for logs
+	private _output: vscode.OutputChannel = vscode.window.createOutputChannel('Claude Code Chat');
+
+	// Cached codebase CLI command/path
+	private _codebasePathCache: string | undefined;
+
+	// Claude instance management
+	private _selectedInstance: string = 'default';
+	private _availableInstances: Array<{
+		name: string;           // e.g., 'default', '.claude-codex'
+		displayName: string;    // e.g., 'Default', 'Codex'
+		path: string;           // Full resolved path
+		flags: string[];        // e.g., ['--dangerously-skip-permissions']
+		isValid: boolean;       // Has valid config
+	}> = [];
+	private _frozenInstanceConfigDir: string | undefined; // Frozen during spawn
+
+	// Indexing status management
+	private _indexingStatusInterval: NodeJS.Timeout | undefined;
+	private _lastIndexingState: string | undefined;
+	private _codebaseStatePath: string | undefined;
+
 	constructor(
 		private readonly _extensionUri: vscode.Uri,
 		private readonly _context: vscode.ExtensionContext
@@ -144,6 +210,16 @@ class ClaudeChatProvider {
 
 		// Load saved model preference
 		this._selectedModel = this._context.workspaceState.get('claude.selectedModel', 'default');
+
+		// Detect and load Claude instances
+		this._availableInstances = this._detectClaudeInstances();
+		this._selectedInstance = this._loadSelectedInstance();
+
+		// Initialize codebase state path
+		const workspaceFolders = vscode.workspace.workspaceFolders;
+		if (workspaceFolders && workspaceFolders.length > 0) {
+			this._codebaseStatePath = path.join(workspaceFolders[0].uri.fsPath, '.codebase', 'state.json');
+		}
 
 		// Resume session from latest conversation
 		const latestConversation = this._getLatestConversation();
@@ -232,6 +308,9 @@ class ClaudeChatProvider {
 			model: this._selectedModel
 		});
 
+		// Send available instances to webview
+		this._sendAvailableInstances();
+
 		// Send platform information to webview
 		this._sendPlatformInfo();
 
@@ -245,12 +324,15 @@ class ClaudeChatProvider {
 				data: this._draftMessage
 			});
 		}
+
+		// Start indexing status polling
+		this._startIndexingStatusPolling();
 	}
 
 	private _handleWebviewMessage(message: any) {
 		switch (message.type) {
 			case 'sendMessage':
-				this._sendMessageToClaude(message.text, message.planMode, message.thinkingMode);
+				this._sendMessageToClaude(message.text, message.planMode, message.thinkingMode, message.parallelAgents);
 				return;
 			case 'newSession':
 				this._newSession();
@@ -285,11 +367,24 @@ class ClaudeChatProvider {
 			case 'selectModel':
 				this._setSelectedModel(message.model);
 				return;
+			case 'selectInstance':
+				this._setSelectedInstance(message.instance, message.useGlobally || false);
+				return;
+			case 'getInstances':
+				this._sendAvailableInstances();
+				return;
+			case 'rescanInstances':
+				this._availableInstances = this._detectClaudeInstances();
+				this._sendAvailableInstances();
+				return;
 			case 'openModelTerminal':
 				this._openModelTerminal();
 				return;
 			case 'executeSlashCommand':
 				this._executeSlashCommand(message.command);
+				return;
+			case 'codebaseCommand':
+				this._handleCodebaseCommand(message.cmd);
 				return;
 			case 'dismissWSLAlert':
 				this._dismissWSLAlert();
@@ -405,7 +500,7 @@ class ClaudeChatProvider {
 		}
 	}
 
-	private async _sendMessageToClaude(message: string, planMode?: boolean, thinkingMode?: boolean) {
+	private async _sendMessageToClaude(message: string, planMode?: boolean, thinkingMode?: boolean, parallelAgents?: boolean) {
 		const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
 		const cwd = workspaceFolder ? workspaceFolder.uri.fsPath : process.cwd();
 
@@ -415,8 +510,12 @@ class ClaudeChatProvider {
 
 		// Prepend mode instructions if enabled
 		let actualMessage = message;
+		if (parallelAgents) {
+			actualMessage = 'PARALLELIZATION WITH SUBAGENTS (THIS MESSAGE ONLY): Use parallel subagents for the next task if it’s effective. If it doesn’t help, proceed sequentially.\n\n' + actualMessage;
+		}
+
 		if (planMode) {
-			actualMessage = 'PLAN FIRST FOR THIS MESSAGE ONLY: Plan first before making any changes. Show me in detail what you will change and wait for my explicit approval in a separate message before proceeding. Do not implement anything until I confirm. This planning requirement applies ONLY to this current message. \n\n' + message;
+			actualMessage = 'PLAN FIRST FOR THIS MESSAGE ONLY: Plan first before making any changes. Show me in detail what you will change and wait for my explicit approval in a separate message before proceeding. Do not implement anything until I confirm. This planning requirement applies ONLY to this current message. \n\n' + actualMessage;
 		}
 		if (thinkingMode) {
 			let thinkingPrompt = '';
@@ -508,26 +607,46 @@ class ClaudeChatProvider {
 		}
 
 		console.log('Claude command args:', args);
-		const wslEnabled = config.get<boolean>('wsl.enabled', false);
+		const wslDisabledEnv = (process.env.CLAUDE_CODE_CHAT_DISABLE_WSL || '').toLowerCase();
+		const wslGloballyDisabled = wslDisabledEnv === '1' || wslDisabledEnv === 'true' || wslDisabledEnv === 'yes';
+		const wslEnabled = !wslGloballyDisabled && config.get<boolean>('wsl.enabled', false);
 		const wslDistro = config.get<string>('wsl.distro', 'Ubuntu');
 		const nodePath = config.get<string>('wsl.nodePath', '/usr/bin/node');
 		const claudePath = config.get<string>('wsl.claudePath', '/usr/local/bin/claude');
+
+		// Freeze the CLAUDE_CONFIG_DIR for this spawn to avoid race conditions
+		this._frozenInstanceConfigDir = this._getClaudeConfigDir();
+
+		// Build environment with CLAUDE_CONFIG_DIR if needed
+		const spawnEnv: NodeJS.ProcessEnv = {
+			...process.env,
+			FORCE_COLOR: '0',
+			NO_COLOR: '1'
+		};
+
+		// Add CLAUDE_CONFIG_DIR if instance is not default
+		if (this._frozenInstanceConfigDir) {
+			spawnEnv.CLAUDE_CONFIG_DIR = this._frozenInstanceConfigDir;
+			console.log('Using CLAUDE_CONFIG_DIR:', this._frozenInstanceConfigDir);
+		}
 
 		let claudeProcess: cp.ChildProcess;
 
 		if (wslEnabled) {
 			// Use WSL with bash -ic for proper environment loading
 			console.log('Using WSL configuration:', { wslDistro, nodePath, claudePath });
-			const wslCommand = `"${nodePath}" --no-warnings --enable-source-maps "${claudePath}" ${args.join(' ')}`;
+
+			// Export CLAUDE_CONFIG_DIR in the bash command if needed
+			const envPrefix = this._frozenInstanceConfigDir
+				? `CLAUDE_CONFIG_DIR="${this._frozenInstanceConfigDir}" `
+				: '';
+
+			const wslCommand = `${envPrefix}"${nodePath}" --no-warnings --enable-source-maps "${claudePath}" ${args.join(' ')}`;
 
 			claudeProcess = cp.spawn('wsl', ['-d', wslDistro, 'bash', '-ic', wslCommand], {
 				cwd: cwd,
 				stdio: ['pipe', 'pipe', 'pipe'],
-				env: {
-					...process.env,
-					FORCE_COLOR: '0',
-					NO_COLOR: '1'
-				}
+				env: spawnEnv
 			});
 		} else {
 			// Use native claude command
@@ -536,11 +655,7 @@ class ClaudeChatProvider {
 				shell: process.platform === 'win32',
 				cwd: cwd,
 				stdio: ['pipe', 'pipe', 'pipe'],
-				env: {
-					...process.env,
-					FORCE_COLOR: '0',
-					NO_COLOR: '1'
-				}
+				env: spawnEnv
 			});
 		}
 
@@ -940,7 +1055,9 @@ class ClaudeChatProvider {
 
 		// Get configuration to check if WSL is enabled
 		const config = vscode.workspace.getConfiguration('claudeCodeChat');
-		const wslEnabled = config.get<boolean>('wsl.enabled', false);
+		const wslDisabledEnv = (process.env.CLAUDE_CODE_CHAT_DISABLE_WSL || '').toLowerCase();
+		const wslGloballyDisabled = wslDisabledEnv === '1' || wslDisabledEnv === 'true' || wslDisabledEnv === 'yes';
+		const wslEnabled = !wslGloballyDisabled && config.get<boolean>('wsl.enabled', false);
 		const wslDistro = config.get<string>('wsl.distro', 'Ubuntu');
 		const nodePath = config.get<string>('wsl.nodePath', '/usr/bin/node');
 		const claudePath = config.get<string>('wsl.claudePath', '/usr/local/bin/claude');
@@ -1787,7 +1904,9 @@ class ClaudeChatProvider {
 
 	private convertToWSLPath(windowsPath: string): string {
 		const config = vscode.workspace.getConfiguration('claudeCodeChat');
-		const wslEnabled = config.get<boolean>('wsl.enabled', false);
+		const wslDisabledEnv = (process.env.CLAUDE_CODE_CHAT_DISABLE_WSL || '').toLowerCase();
+		const wslGloballyDisabled = wslDisabledEnv === '1' || wslDisabledEnv === 'true' || wslDisabledEnv === 'yes';
+		const wslEnabled = !wslGloballyDisabled && config.get<boolean>('wsl.enabled', false);
 
 		if (wslEnabled && windowsPath.match(/^[a-zA-Z]:/)) {
 			// Convert C:\Users\... to /mnt/c/Users/...
@@ -2231,7 +2350,9 @@ class ClaudeChatProvider {
 
 	private _openModelTerminal(): void {
 		const config = vscode.workspace.getConfiguration('claudeCodeChat');
-		const wslEnabled = config.get<boolean>('wsl.enabled', false);
+		const wslDisabledEnv = (process.env.CLAUDE_CODE_CHAT_DISABLE_WSL || '').toLowerCase();
+		const wslGloballyDisabled = wslDisabledEnv === '1' || wslDisabledEnv === 'true' || wslDisabledEnv === 'yes';
+		const wslEnabled = !wslGloballyDisabled && config.get<boolean>('wsl.enabled', false);
 		const wslDistro = config.get<string>('wsl.distro', 'Ubuntu');
 		const nodePath = config.get<string>('wsl.nodePath', '/usr/bin/node');
 		const claudePath = config.get<string>('wsl.claudePath', '/usr/local/bin/claude');
@@ -2246,10 +2367,13 @@ class ClaudeChatProvider {
 
 		// Create terminal with the claude /model command
 		const terminal = vscode.window.createTerminal('Claude Model Selection');
+		// Include CLAUDE_CONFIG_DIR so terminal uses same instance/session store
+		const configDir = this._getClaudeConfigDir();
+		const envPrefix = configDir ? `CLAUDE_CONFIG_DIR="${configDir}" ` : '';
 		if (wslEnabled) {
 			terminal.sendText(`wsl -d ${wslDistro} ${nodePath} --no-warnings --enable-source-maps ${claudePath} ${args.join(' ')}`);
 		} else {
-			terminal.sendText(`claude ${args.join(' ')}`);
+			terminal.sendText(`${envPrefix}claude ${args.join(' ')}`.trim());
 		}
 		terminal.show();
 
@@ -2268,7 +2392,9 @@ class ClaudeChatProvider {
 
 	private _executeSlashCommand(command: string): void {
 		const config = vscode.workspace.getConfiguration('claudeCodeChat');
-		const wslEnabled = config.get<boolean>('wsl.enabled', false);
+		const wslDisabledEnv = (process.env.CLAUDE_CODE_CHAT_DISABLE_WSL || '').toLowerCase();
+		const wslGloballyDisabled = wslDisabledEnv === '1' || wslDisabledEnv === 'true' || wslDisabledEnv === 'yes';
+		const wslEnabled = !wslGloballyDisabled && config.get<boolean>('wsl.enabled', false);
 		const wslDistro = config.get<string>('wsl.distro', 'Ubuntu');
 		const nodePath = config.get<string>('wsl.nodePath', '/usr/bin/node');
 		const claudePath = config.get<string>('wsl.claudePath', '/usr/local/bin/claude');
@@ -2283,10 +2409,13 @@ class ClaudeChatProvider {
 
 		// Create terminal with the claude command
 		const terminal = vscode.window.createTerminal(`Claude /${command}`);
+		// Include CLAUDE_CONFIG_DIR so terminal uses same instance/session store
+		const configDir = this._getClaudeConfigDir();
+		const envPrefix = configDir ? `CLAUDE_CONFIG_DIR="${configDir}" ` : '';
 		if (wslEnabled) {
 			terminal.sendText(`wsl -d ${wslDistro} ${nodePath} --no-warnings --enable-source-maps ${claudePath} ${args.join(' ')}`);
 		} else {
-			terminal.sendText(`claude ${args.join(' ')}`);
+			terminal.sendText(`${envPrefix}claude ${args.join(' ')}`.trim());
 		}
 		terminal.show();
 
@@ -2309,7 +2438,9 @@ class ClaudeChatProvider {
 
 		// Get WSL configuration
 		const config = vscode.workspace.getConfiguration('claudeCodeChat');
-		const wslEnabled = config.get<boolean>('wsl.enabled', false);
+		const wslDisabledEnv = (process.env.CLAUDE_CODE_CHAT_DISABLE_WSL || '').toLowerCase();
+		const wslGloballyDisabled = wslDisabledEnv === '1' || wslDisabledEnv === 'true' || wslDisabledEnv === 'yes';
+		const wslEnabled = !wslGloballyDisabled && config.get<boolean>('wsl.enabled', false);
 
 		this._postMessage({
 			type: 'platformInfo',
@@ -2385,6 +2516,539 @@ class ClaudeChatProvider {
 		}
 	}
 
+	// ============================================
+	// CLAUDE INSTANCE MANAGEMENT
+	// ============================================
+
+	/**
+	 * Detects all available Claude instances by scanning home directory.
+	 * Implements robust detection with symlink resolution and validation.
+	 */
+	private _detectClaudeInstances(): Array<{
+		name: string;
+		displayName: string;
+		path: string;
+		flags: string[];
+		isValid: boolean;
+	}> {
+		const instances: Array<{
+			name: string;
+			displayName: string;
+			path: string;
+			flags: string[];
+			isValid: boolean;
+		}> = [];
+
+		// Always include default instance
+		instances.push({
+			name: 'default',
+			displayName: 'Default',
+			path: '',
+			flags: [],
+			isValid: true
+		});
+
+		try {
+			const homeDir = process.env.HOME || process.env.USERPROFILE;
+			if (!homeDir) {
+				console.warn('Could not determine home directory');
+				return instances;
+			}
+
+			// Get config to check if WSL is enabled
+			const config = vscode.workspace.getConfiguration('claudeCodeChat');
+			const wslDisabledEnv = (process.env.CLAUDE_CODE_CHAT_DISABLE_WSL || '').toLowerCase();
+		const wslGloballyDisabled = wslDisabledEnv === '1' || wslDisabledEnv === 'true' || wslDisabledEnv === 'yes';
+		const wslEnabled = !wslGloballyDisabled && config.get<boolean>('wsl.enabled', false);
+
+			// Scan for .claude* directories
+			const files = require('fs').readdirSync(homeDir);
+
+			for (const file of files) {
+				// Skip if not starting with .claude
+				if (!file.startsWith('.claude')) {
+					continue;
+				}
+
+				const fullPath = path.join(homeDir, file);
+
+				try {
+					// Check if it's a directory (and resolve symlinks)
+					const stats = require('fs').lstatSync(fullPath);
+					if (!stats.isDirectory() && !stats.isSymbolicLink()) {
+						continue;
+					}
+
+					// Resolve symlinks to real path
+					const realPath = require('fs').realpathSync(fullPath);
+
+					// Check if directory is valid (has expected structure)
+					const isValid = this._validateClaudeDirectory(realPath);
+
+					// Determine display name and flags
+					let displayName = file.replace('.claude-', '').replace('.claude', 'Default');
+					let flags: string[] = [];
+
+					// Special handling for known instances
+					if (file === '.claude') {
+						displayName = 'Default';
+					} else if (file === '.claude-codex') {
+						displayName = 'Codex';
+						flags = ['--dangerously-skip-permissions'];
+					} else if (file === '.claude-gpt5') {
+						displayName = 'GPT-5';
+						flags = ['--dangerously-skip-permissions'];
+					} else if (file === '.claude-sonnet') {
+						displayName = 'Sonnet';
+						flags = ['--dangerously-skip-permissions'];
+					} else {
+						// Capitalize first letter
+						displayName = displayName.charAt(0).toUpperCase() + displayName.slice(1);
+					}
+
+					// Add instance (skip default as it's already added)
+					if (file !== '.claude') {
+						instances.push({
+							name: file,
+							displayName,
+							path: wslEnabled ? this.convertToWSLPath(realPath) : realPath,
+							flags,
+							isValid
+						});
+					} else {
+						// Update default instance with real path
+						instances[0].path = wslEnabled ? this.convertToWSLPath(realPath) : realPath;
+						instances[0].isValid = isValid;
+					}
+
+				} catch (error: any) {
+					// Permission error or symlink resolution error
+					console.warn(`Could not access ${file}:`, error.message);
+
+					// Still add it but mark as invalid
+					instances.push({
+						name: file,
+						displayName: file.replace('.claude-', '').replace('.claude', 'Default'),
+						path: fullPath,
+						flags: [],
+						isValid: false
+					});
+				}
+			}
+
+			// Sort instances: default first, then by name
+			instances.sort((a, b) => {
+				if (a.name === 'default') return -1;
+				if (b.name === 'default') return 1;
+				return a.displayName.localeCompare(b.displayName);
+			});
+
+			console.log('Detected Claude instances:', instances);
+			return instances;
+
+		} catch (error: any) {
+			console.error('Error detecting Claude instances:', error);
+			return instances; // Return at least default
+		}
+	}
+
+	/**
+	 * Validates if a directory is a valid Claude configuration directory.
+	 */
+	private _validateClaudeDirectory(dirPath: string): boolean {
+		try {
+			const fs = require('fs');
+
+			// Check for presence of typical Claude files
+			const expectedFiles = ['settings.json', 'history.jsonl', '.credentials.json'];
+
+			// At least one of these should exist
+			return expectedFiles.some(file => {
+				try {
+					return fs.existsSync(path.join(dirPath, file));
+				} catch {
+					return false;
+				}
+			});
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * Loads the selected instance with dual persistence (workspace + global fallback).
+	 */
+	private _loadSelectedInstance(): string {
+		// Try workspace-specific preference first
+		const workspaceInstance = this._context.workspaceState.get<string>('claude.selectedInstance');
+
+		if (workspaceInstance) {
+			// Validate that the instance still exists
+			const exists = this._availableInstances.some(i => i.name === workspaceInstance);
+			if (exists) {
+				console.log('Loaded workspace instance:', workspaceInstance);
+				return workspaceInstance;
+			} else {
+				console.warn(`Workspace instance ${workspaceInstance} no longer exists, purging`);
+				this._context.workspaceState.update('claude.selectedInstance', undefined);
+			}
+		}
+
+		// Fallback to global preference
+		const globalInstance = this._context.globalState.get<string>('claude.selectedInstance', 'default');
+
+		// Validate global preference
+		const exists = this._availableInstances.some(i => i.name === globalInstance);
+		if (exists) {
+			console.log('Using global instance:', globalInstance);
+			return globalInstance;
+		}
+
+		console.log('Using default instance');
+		return 'default';
+	}
+
+	/**
+	 * Sets the selected Claude instance with validation and persistence.
+	 */
+	private _setSelectedInstance(instanceName: string, useGlobally: boolean = false): void {
+		// Re-detect instances to ensure up-to-date list
+		this._availableInstances = this._detectClaudeInstances();
+
+		// Find the instance
+		const instance = this._availableInstances.find(i => i.name === instanceName);
+
+		if (!instance) {
+			vscode.window.showErrorMessage(`Instance '${instanceName}' not found`);
+			return;
+		}
+
+		if (!instance.isValid) {
+			vscode.window.showWarningMessage(
+				`Instance '${instance.displayName}' may not be properly configured. Use anyway?`,
+				'Use Anyway',
+				'Cancel'
+			).then(choice => {
+				if (choice === 'Use Anyway') {
+					this._applyInstanceSelection(instanceName, useGlobally);
+				}
+			});
+			return;
+		}
+
+		this._applyInstanceSelection(instanceName, useGlobally);
+	}
+
+	/**
+	 * Applies the instance selection (after validation).
+	 */
+	private _applyInstanceSelection(instanceName: string, useGlobally: boolean): void {
+		const instance = this._availableInstances.find(i => i.name === instanceName);
+		if (!instance) return;
+
+		// Check if there's an active process
+		if (this._currentClaudeProcess) {
+			vscode.window.showWarningMessage(
+				`Switching to '${instance.displayName}' will restart the current session. Continue?`,
+				'Restart Now',
+				'Cancel'
+			).then(choice => {
+				if (choice === 'Restart Now') {
+					this._stopClaudeProcess();
+					this._finalizeInstanceSelection(instanceName, instance, useGlobally);
+				}
+			});
+			return;
+		}
+
+		this._finalizeInstanceSelection(instanceName, instance, useGlobally);
+	}
+
+	/**
+	 * Finalizes the instance selection (saves and notifies).
+	 */
+	private _finalizeInstanceSelection(instanceName: string, instance: any, useGlobally: boolean): void {
+		this._selectedInstance = instanceName;
+
+		// Save to workspace state
+		this._context.workspaceState.update('claude.selectedInstance', instanceName);
+
+		// Optionally save to global state
+		if (useGlobally) {
+			this._context.globalState.update('claude.selectedInstance', instanceName);
+		}
+
+		// Invalidate current session (force new session on next message)
+		this._currentSessionId = undefined;
+
+		console.log('Instance selected:', instanceName);
+
+		// Show confirmation
+		const scope = useGlobally ? ' (for all workspaces)' : '';
+		vscode.window.showInformationMessage(
+			`Claude instance switched to: ${instance.displayName}${scope}`
+		);
+
+		// Notify frontend
+		this._postMessage({
+			type: 'instanceChanged',
+			data: {
+				name: instanceName,
+				displayName: instance.displayName
+			}
+		});
+	}
+
+	/**
+	 * Sends available instances to the frontend.
+	 */
+	private _sendAvailableInstances(): void {
+		// Re-scan before sending
+		this._availableInstances = this._detectClaudeInstances();
+
+		this._postMessage({
+			type: 'instancesData',
+			data: {
+				available: this._availableInstances,
+				selected: this._selectedInstance
+			}
+		});
+	}
+
+	/**
+	 * Gets the CLAUDE_CONFIG_DIR for spawn, with WSL path conversion.
+	 * This is "frozen" during spawn to avoid race conditions.
+	 */
+	private _getClaudeConfigDir(): string {
+		// Revalidate the selected instance before spawn
+		const instance = this._availableInstances.find(i => i.name === this._selectedInstance);
+
+		if (!instance) {
+			console.warn(`Selected instance ${this._selectedInstance} not found, using default`);
+			return '';
+		}
+
+		if (!instance.isValid) {
+			console.warn(`Selected instance ${this._selectedInstance} is not valid, using default`);
+			return '';
+		}
+
+		if (instance.name === 'default') {
+			return ''; // No override needed
+		}
+
+		// Return the pre-converted path (already converted to WSL if needed)
+		return instance.path;
+	}
+
+	/**
+	 * Start polling for indexing status updates from .codebase/state.json
+	 */
+	private _startIndexingStatusPolling(): void {
+		// Stop any existing polling
+		this._stopIndexingStatusPolling();
+
+		// Send initial status
+		this._checkIndexingStatus();
+
+		// Poll every 3 seconds
+		this._indexingStatusInterval = setInterval(() => {
+			this._checkIndexingStatus();
+		}, 3000);
+	}
+
+	/**
+	 * Stop indexing status polling
+	 */
+	private _stopIndexingStatusPolling(): void {
+		if (this._indexingStatusInterval) {
+			clearInterval(this._indexingStatusInterval);
+			this._indexingStatusInterval = undefined;
+		}
+	}
+
+	/**
+	 * Check indexing status from .codebase/state.json and send to frontend
+	 */
+	private _checkIndexingStatus(): void {
+		if (!this._codebaseStatePath) {
+			// No workspace or no state path configured
+			this._postMessage({
+				type: 'indexingStatus',
+				data: {
+					state: 'not-found',
+					message: 'No workspace detected'
+				}
+			});
+			return;
+		}
+
+		const fs = require('fs');
+
+		try {
+			// Check if file exists
+			if (!fs.existsSync(this._codebaseStatePath)) {
+				this._postMessage({
+					type: 'indexingStatus',
+					data: {
+						state: 'not-found',
+						message: 'Codebase not indexed yet'
+					}
+				});
+				return;
+			}
+
+			// Read and parse state.json
+			const stateContent = fs.readFileSync(this._codebaseStatePath, 'utf-8');
+			const state = JSON.parse(stateContent);
+
+			// Extract relevant info
+			const indexingState = state.indexingStatus?.state || 'unknown';
+			const qdrantStats = state.qdrantStats || {};
+			const lastActivity = state.lastActivity || {};
+
+			// Only send update if state changed
+			if (indexingState !== this._lastIndexingState) {
+				this._lastIndexingState = indexingState;
+
+				this._postMessage({
+					type: 'indexingStatus',
+					data: {
+						state: indexingState,
+						totalVectors: qdrantStats.totalVectors || 0,
+						uniqueFiles: qdrantStats.uniqueFiles || 0,
+						lastActivity: lastActivity.action || '',
+						lastFile: lastActivity.filePath || '',
+						qdrantCollection: state.qdrantCollection || '',
+						message: this._getIndexingMessage(indexingState, qdrantStats)
+					}
+				});
+			}
+		} catch (error: any) {
+			console.error('Error reading codebase state:', error);
+			this._postMessage({
+				type: 'indexingStatus',
+				data: {
+					state: 'error',
+					message: `Error: ${error.message}`
+				}
+			});
+		}
+	}
+
+	/**
+	 * Get user-friendly message for indexing state
+	 */
+	private _getIndexingMessage(state: string, stats: any): string {
+		switch (state) {
+			case 'watching':
+				return `Indexed: ${stats.totalVectors || 0} vectors, ${stats.uniqueFiles || 0} files`;
+			case 'indexing':
+				return `Indexing in progress... ${stats.uniqueFiles || 0} files so far`;
+			case 'idle':
+				return `Idle: ${stats.totalVectors || 0} vectors indexed`;
+			case 'error':
+				return 'Indexing error occurred';
+			default:
+				return `Status: ${state}`;
+		}
+	}
+
+	// ================================
+	// Codebase CLI integration
+	// ================================
+	public async startCodebaseWatcher(): Promise<void> {
+		try {
+			const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+			if (!workspaceFolder) return;
+			const workspacePath = workspaceFolder.uri.fsPath;
+			const codebaseCmd = await this._resolveCodebasePath();
+			if (!codebaseCmd) {
+				this._output.appendLine('Codebase CLI not found; skipping auto-start');
+				return;
+			}
+			await this._runCodebase(['-start', workspacePath]);
+			this._output.appendLine(`codebase -start initiated for ${workspacePath}`);
+		} catch (err: any) {
+			this._output.appendLine(`Failed to start codebase watcher: ${err.message || err}`);
+		}
+	}
+
+	private async _handleCodebaseCommand(cmd: string): Promise<void> {
+		const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+		const workspacePath = workspaceFolder?.uri.fsPath;
+		switch (cmd) {
+			case 'start':
+				if (!workspacePath) return;
+				await this._runCodebase(['-start', workspacePath]);
+				break;
+			case 'stats':
+				await this._runCodebase(['-stats']);
+				break;
+			case 'index-history':
+				await this._runCodebase(['-index-history']);
+				break;
+			case 'full-reset':
+				if (!workspacePath) return;
+				const confirm = await vscode.window.showWarningMessage('This will reset the index for this workspace. Continue?', 'Yes', 'No');
+				if (confirm !== 'Yes') return;
+				await this._runCodebase(['-full-reset', workspacePath]);
+				break;
+		}
+	}
+
+	private async _resolveCodebasePath(): Promise<string | undefined> {
+		if (this._codebasePathCache) return this._codebasePathCache;
+		const config = vscode.workspace.getConfiguration('claudeCodeChat');
+		const configured = config.get<string>('codebase.path');
+		if (configured) {
+			this._codebasePathCache = configured;
+			return configured;
+		}
+		// Try PATH
+		try {
+			const { stdout } = await exec('which codebase');
+			const found = stdout.trim();
+			if (found) {
+				this._codebasePathCache = found;
+				return found;
+			}
+		} catch {}
+		// Fallback to common location
+		const fallback = path.join(process.env.HOME || '', '.local', 'bin', 'codebase');
+		this._codebasePathCache = fallback;
+		return fallback;
+	}
+
+	private async _runCodebase(args: string[]): Promise<void> {
+		const codebaseCmd = await this._resolveCodebasePath();
+		if (!codebaseCmd) {
+			vscode.window.showWarningMessage('Codebase CLI not found. Configure claudeCodeChat.codebase.path');
+			return;
+		}
+		const config = vscode.workspace.getConfiguration('claudeCodeChat');
+		const wslDisabledEnv = (process.env.CLAUDE_CODE_CHAT_DISABLE_WSL || '').toLowerCase();
+		const wslGloballyDisabled = wslDisabledEnv === '1' || wslDisabledEnv === 'true' || wslDisabledEnv === 'yes';
+		const wslEnabled = !wslGloballyDisabled && config.get<boolean>('wsl.enabled', false);
+		const wslDistro = config.get<string>('wsl.distro', 'Ubuntu');
+
+		if (wslEnabled && process.platform === 'win32') {
+			const cmd = `"${codebaseCmd}" ${args.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ')}`;
+			const terminal = vscode.window.createTerminal('Codebase');
+			terminal.sendText(`wsl -d ${wslDistro} bash -ic ${JSON.stringify(cmd)}`);
+			terminal.show();
+			return;
+		}
+		// Run detached in background when starting watcher; others open terminal
+		if (args[0] === '-start') {
+			cp.spawn(codebaseCmd, args, { detached: true, stdio: 'ignore' }).unref();
+			return;
+		}
+		const terminal = vscode.window.createTerminal('Codebase');
+		terminal.sendText(`${codebaseCmd} ${args.join(' ')}`);
+		terminal.show();
+	}
+
 	public dispose() {
 		if (this._panel) {
 			this._panel.dispose();
@@ -2396,6 +3060,9 @@ class ClaudeChatProvider {
 			this._messageHandlerDisposable.dispose();
 			this._messageHandlerDisposable = undefined;
 		}
+
+		// Stop indexing status polling
+		this._stopIndexingStatusPolling();
 
 		while (this._disposables.length) {
 			const disposable = this._disposables.pop();
