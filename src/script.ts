@@ -2149,6 +2149,9 @@ const getScript = (isTelemetryEnabled: boolean) => `<script>
 				case 'setProcessing':
 					isProcessing = message.data.isProcessing;
 					isProcessActive = message.data.isProcessing; // Track for instance switching
+					// Disable/enable New Chat while processing
+					const newSessionBtn = document.getElementById('newSessionBtn');
+					if (newSessionBtn) newSessionBtn.disabled = isProcessing;
 					if (isProcessing) {
 						startRequestTimer(message.data.requestStartTime);
 						showStopButton();
@@ -2572,8 +2575,10 @@ const getScript = (isTelemetryEnabled: boolean) => `<script>
 
 		// Session management functions
 		function newSession() {
+			// Guard: prevent starting a new session while processing
+			if (isProcessing) return;
 			sendStats('New chat');
-			
+
 			vscode.postMessage({
 				type: 'newSession'
 			});

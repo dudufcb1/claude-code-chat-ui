@@ -49,6 +49,13 @@ const styles = `
         gap: 5px;
     }
 
+    /* Generic disabled state for buttons */
+    .btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+        filter: grayscale(30%);
+    }
+
     .btn:hover {
         background-color: var(--vscode-button-background);
         border-color: var(--vscode-focusBorder);
