@@ -12,6 +12,13 @@ Ditch the command line and experience Claude Code like never before. This extens
 
 ---
 
+Fork notice
+
+- Credits: This project was originally created by Andre Pimenta (andrepimenta/claude-code-chat).
+- Purpose of this fork: intended to be used together with dudufcb1/codebase-index-cli. See README on the codebase-cli branch:
+  https://github.com/dudufcb1/codebase-index-cli/blob/codebase-cli/README.md
+  Changes in this fork support that workflow and include some personalization.
+
 ## ✨ **Why Choose Claude Code Chat?**
 
 🖥️ **No Terminal Required** - Beautiful chat interface replaces command-line interactions  
@@ -345,3 +352,4 @@ Need help? We've got you covered:
 [**Download Now**](https://marketplace.visualstudio.com/items?itemName=andrepimenta.claude-code-chat)
 
 </div>
+
