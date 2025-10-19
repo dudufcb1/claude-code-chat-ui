@@ -149,6 +149,7 @@ const getHtml = (isTelemetryEnabled: boolean) => `<!DOCTYPE html>
 		</button>
 	</div>
 
+			<div id="indexingWarning" class="indexing-warning" style="display: none;"><span class="spinner" aria-hidden="true"></span><span>Codebase index is initializing/scanning. Semantic search may be less accurate until complete.</span></div>
 			<div id="yoloWarning" class="yolo-warning" style="display: none;">
 			⚠️ Yolo Mode Active: Claude Code will auto-approve all tool requests.
 		</div>

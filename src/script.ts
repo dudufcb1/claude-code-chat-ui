@@ -1085,14 +1085,17 @@ const getScript = (isTelemetryEnabled: boolean) => `<script>
 		
 		function updateYoloWarning() {
 			const yoloModeCheckbox = document.getElementById('yolo-mode');
-			const warning = document.getElementById('yoloWarning');
-			
-			if (!yoloModeCheckbox || !warning) {
-				return; // Elements not ready yet
-			}
-			
+			const yoloBanner = document.getElementById('yoloWarning');
+			const indexingBanner = document.getElementById('indexingWarning');
+			const indexingActive = indexingBanner && indexingBanner.style.display !== 'none';
+			if (!yoloModeCheckbox || !yoloBanner) return;
 			const yoloMode = yoloModeCheckbox.checked;
-			warning.style.display = yoloMode ? 'block' : 'none';
+			// If indexing warning is active, it takes precedence and hides YOLO
+			if (indexingActive) {
+				yoloBanner.style.display = 'none';
+				return;
+			}
+			yoloBanner.style.display = yoloMode ? 'block' : 'none';
 		}
 		
 		function isPermissionError(content) {
@@ -1592,6 +1595,23 @@ const getScript = (isTelemetryEnabled: boolean) => `<script>
 		 * Update indexing status badge
 		 */
 		function updateIndexingStatusBadge(data) {
+			// Toggle indexing banner for initializing/scanning-like states
+			const indexingBanner = document.getElementById('indexingWarning');
+			const yoloBanner = document.getElementById('yoloWarning');
+			if (indexingBanner) {
+				const showIndexing = data && (data.state === 'initializing' || data.state === 'scanning');
+				indexingBanner.style.display = showIndexing ? 'block' : 'none';
+				// Precedence over YOLO: hide YOLO when indexing banner is visible
+				if (yoloBanner) {
+					if (showIndexing) {
+						yoloBanner.style.display = 'none';
+					} else if (typeof updateYoloWarning === 'function') {
+						// Re-evaluate YOLO visibility once indexing finishes
+						updateYoloWarning();
+					}
+				}
+			}
+
 			// Update Start button state and tooltip based on indexer status
 			const startBtn = document.getElementById('codebaseStartBtn');
 			if (startBtn) {

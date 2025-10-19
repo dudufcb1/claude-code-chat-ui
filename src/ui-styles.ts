@@ -1690,6 +1690,34 @@ const styles = `
         animation: slideDown 0.3s ease;
     }
 
+    /* Indexing warning should be red background with yellow text, higher priority than YOLO */
+    .indexing-warning {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        font-size: 12px;
+        color: #ffd700; /* yellow text */
+        text-align: center;
+        font-weight: 700;
+        background-color: #8b0000; /* dark red */
+        border: 1px solid rgba(255, 215, 0, 0.5);
+        padding: 8px 12px;
+        margin: 4px 4px;
+        border-radius: 4px;
+        animation: slideDown 0.2s ease;
+    }
+
+    .indexing-warning .spinner {
+        width: 12px;
+        height: 12px;
+        border: 2px solid rgba(255, 215, 0, 0.4);
+        border-top-color: #ffd700;
+        border-radius: 50%;
+        animation: spin 0.9s linear infinite;
+        box-sizing: border-box;
+    }
+
     .yolo-suggestion {
         margin-top: 12px;
         padding: 12px;
