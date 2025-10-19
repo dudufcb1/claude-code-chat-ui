@@ -713,19 +713,45 @@ const getScript = (isTelemetryEnabled: boolean) => `<script>
 			}
 		}
 
+		let queued = false;
+
+		function updateSendButtonQueued(isQueued) {
+			const btn = document.getElementById('sendBtn');
+			if (!btn) return;
+			const span = btn.querySelector('span');
+			if (span) {
+				span.textContent = isQueued ? 'Queued ' : 'Send ';
+			}
+			btn.title = isQueued ? 'Click to cancel queue' : '';
+		}
+
+		function toggleQueue() {
+			queued = !queued;
+			updateSendButtonQueued(queued);
+		}
+
 		function sendMessage() {
 			const text = messageInput.value.trim();
-			if (text) {
-				vscode.postMessage({
-					type: 'sendMessage',
-					text: text,
-					planMode: planModeEnabled,
-					thinkingMode: thinkingModeEnabled,
-					parallelAgents: parallelAgentsEnabled
-				});
-				
-				messageInput.value = '';
+			if (!text) return;
+
+			// If processing, toggle queue instead of sending
+			if (isProcessing) {
+				// Toggle queued state
+				toggleQueue();
+				return;
 			}
+
+			// Not processing: send immediately
+			vscode.postMessage({
+				type: 'sendMessage',
+				text: text,
+				planMode: planModeEnabled,
+				thinkingMode: thinkingModeEnabled,
+				parallelAgents: parallelAgentsEnabled
+			});
+			queued = false;
+			updateSendButtonQueued(false);
+			messageInput.value = '';
 		}
 
 		function togglePlanMode() {
@@ -1998,13 +2024,14 @@ const getScript = (isTelemetryEnabled: boolean) => `<script>
 
 		// Disable/enable buttons during processing
 		function disableButtons() {
-			const sendBtn = document.getElementById('sendBtn');
-			if (sendBtn) sendBtn.disabled = true;
+			// Keep send button enabled to allow queueing during processing
+			// const sendBtn = document.getElementById('sendBtn');
+			// if (sendBtn) sendBtn.disabled = true;
 		}
 
 		function enableButtons() {
-			const sendBtn = document.getElementById('sendBtn');
-			if (sendBtn) sendBtn.disabled = false;
+			// const sendBtn = document.getElementById('sendBtn');
+			// if (sendBtn) sendBtn.disabled = false;
 		}
 
 		// Copy message content function
@@ -2125,11 +2152,30 @@ const getScript = (isTelemetryEnabled: boolean) => `<script>
 					if (isProcessing) {
 						startRequestTimer(message.data.requestStartTime);
 						showStopButton();
-						disableButtons();
+						// Keep send button enabled to allow queueing
+						// disableButtons();
 					} else {
 						stopRequestTimer();
 						hideStopButton();
-						enableButtons();
+						// enableButtons();
+						// Auto-send if a message was queued and textarea has content
+						const text = messageInput.value.trim();
+						if (queued && text) {
+							vscode.postMessage({
+								type: 'sendMessage',
+								text: text,
+								planMode: planModeEnabled,
+								thinkingMode: thinkingModeEnabled,
+								parallelAgents: parallelAgentsEnabled
+							});
+							queued = false;
+							updateSendButtonQueued(false);
+							messageInput.value = '';
+						} else if (queued && !text) {
+							// Nothing to send, just reset queued state
+							queued = false;
+							updateSendButtonQueued(false);
+						}
 					}
 					updateStatusWithTotals();
 					break;
