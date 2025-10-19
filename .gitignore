@@ -1,4 +1,7 @@
 out
+.codebase
+.env
+agents_messaging.db
 dist
 node_modules
 .vscode-test/
