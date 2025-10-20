@@ -70,6 +70,7 @@ const getHtml = (isTelemetryEnabled: boolean) => `<!DOCTYPE html>
 					<span onclick="toggleParallelAgents()" title="Parallelization with subagents for the next task (if helpful)">Parallelization (Subagents)</span>
 					<div class="mode-switch" id="parallelAgentsSwitch" onclick="toggleParallelAgents()" title="Parallelization with subagents for the next task (if helpful)"></div>
 				</div>
+				<button class="btn outlined" id="clearBtnInline" onclick="executeSlashCommand('clear')" title="Run /clear now (skips prompts when enabled)">Clear</button>
 			</div>
 			<div class="textarea-container">
 				<div class="textarea-wrapper">
@@ -373,7 +374,7 @@ const getHtml = (isTelemetryEnabled: boolean) => `<!DOCTYPE html>
 						</button>
 						<div class="yolo-mode-section">
 							<input type="checkbox" id="yolo-mode" onchange="updateSettings(); updateYoloWarning();">
-							<label for="yolo-mode">Enable Yolo Mode (Auto-allow all permissions)</label>
+							<label for="yolo-mode">Enable Yolo Mode (Auto-allow all permissions)</label><button class="btn outlined" style="margin-left:8px;" onclick="executeSlashCommand('clear')" title="Run /clear now (respects Yolo Mode)">Clear</button>
 						</div>
 					</div>
 				</div>

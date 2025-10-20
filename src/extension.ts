@@ -6,6 +6,9 @@ import getHtml from './ui';
 
 const exec = util.promisify(cp.exec);
 
+// Shared provider reference for deactivate cleanup
+let sharedProvider: ClaudeChatProvider | undefined;
+
 export function activate(context: vscode.ExtensionContext) {
 	console.log('Claude Code Chat extension is being activated!');
 
@@ -13,8 +16,22 @@ export function activate(context: vscode.ExtensionContext) {
 	try {
 		const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
 		if (workspaceFolder) {
+			const workspacePath = workspaceFolder.uri.fsPath;
+			const codebaseDir = path.join(workspacePath, '.codebase');
+			const fs = require('fs');
 			const provider = new ClaudeChatProvider(context.extensionUri, context);
-			provider['startCodebaseWatcher']?.();
+			if (fs.existsSync(codebaseDir)) {
+				provider['startCodebaseWatcher']?.();
+			} else {
+				vscode.window.showInformationMessage(
+					'No .codebase folder detected in this workspace. Do you want to start indexing this folder?',
+					'Yes', 'No'
+				).then(answer => {
+					if (answer === 'Yes') {
+						provider['startCodebaseWatcher']?.();
+					}
+				});
+			}
 		}
 	} catch (e) {
 		console.warn('codebase auto-start failed:', (e as any)?.message || e);
@@ -49,6 +66,7 @@ export function activate(context: vscode.ExtensionContext) {
 	}
 
 	const provider = new ClaudeChatProvider(context.extensionUri, context);
+	sharedProvider = provider;
 
 	const disposable = vscode.commands.registerCommand('claude-code-chat.openChat', (column?: vscode.ViewColumn) => {
 		console.log('Claude Code Chat command executed!');
@@ -86,7 +104,16 @@ export function activate(context: vscode.ExtensionContext) {
 	console.log('Claude Code Chat extension activation completed successfully!');
 }
 
-export function deactivate() { }
+export function deactivate() {
+	try {
+		const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+		const workspacePath = workspaceFolder?.uri.fsPath;
+		if (sharedProvider && workspacePath) {
+			// Best-effort stop to avoid leaving detached watchers running
+			sharedProvider.stopCodebaseWatcherSync();
+		}
+	} catch {}
+}
 
 interface ConversationData {
 	sessionId: string;
@@ -2402,6 +2429,12 @@ class ClaudeChatProvider {
 		// Build command arguments
 		const args = [`/${command}`];
 
+		// Respect YOLO mode for slash commands: skip permission prompts when enabled
+		const yoloMode = config.get<boolean>('permissions.yoloMode', false);
+		if (yoloMode) {
+			args.push('--dangerously-skip-permissions');
+		}
+
 		// Add session resume if we have a current session
 		if (this._currentSessionId) {
 			args.push('--resume', this._currentSessionId);
@@ -2974,6 +3007,50 @@ class ClaudeChatProvider {
 		}
 	}
 
+	public async stopCodebaseWatcher(): Promise<void> {
+		try {
+			const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+			if (!workspaceFolder) return;
+			const workspacePath = workspaceFolder.uri.fsPath;
+			await this._runCodebase(['-stop', workspacePath]);
+			this._output.appendLine(`codebase -stop requested for ${workspacePath}`);
+		} catch (err: any) {
+			this._output.appendLine(`Failed to stop codebase watcher: ${err.message || err}`);
+		}
+	}
+
+	public stopCodebaseWatcherSync(): void {
+		try {
+			const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+			if (!workspaceFolder) return;
+			const workspacePath = workspaceFolder.uri.fsPath;
+			let codebaseCmd = this._codebasePathCache;
+			if (!codebaseCmd) {
+				try {
+					codebaseCmd = cp.execSync('which codebase', { encoding: 'utf8' }).trim();
+				} catch {
+					codebaseCmd = path.join(process.env.HOME || '', '.local', 'bin', 'codebase');
+				}
+				this._codebasePathCache = codebaseCmd;
+			}
+			const config = vscode.workspace.getConfiguration('claudeCodeChat');
+			const wslDisabledEnv = (process.env.CLAUDE_CODE_CHAT_DISABLE_WSL || '').toLowerCase();
+			const wslGloballyDisabled = wslDisabledEnv === '1' || wslDisabledEnv === 'true' || wslDisabledEnv === 'yes';
+			const wslEnabled = !wslGloballyDisabled && config.get<boolean>('wsl.enabled', false);
+			const wslDistro = config.get<string>('wsl.distro', 'Ubuntu');
+
+			if (wslEnabled && process.platform === 'win32') {
+				const cmd = `"${codebaseCmd}" '-stop' '${workspacePath.replace(/'/g, "'\\\''")}'`;
+				cp.spawnSync('wsl', ['-d', wslDistro, 'bash', '-ic', cmd], { stdio: 'ignore' });
+			} else {
+				cp.spawnSync(codebaseCmd, ['-stop', workspacePath], { stdio: 'ignore' });
+			}
+			this._output.appendLine(`codebase -stop sync requested for ${workspacePath}`);
+		} catch (err: any) {
+			this._output.appendLine(`Failed to stop codebase watcher (sync): ${err.message || err}`);
+		}
+	}
+
 	private async _handleCodebaseCommand(cmd: string): Promise<void> {
 		const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
 		const workspacePath = workspaceFolder?.uri.fsPath;
@@ -2981,6 +3058,10 @@ class ClaudeChatProvider {
 			case 'start':
 				if (!workspacePath) return;
 				await this._runCodebase(['-start', workspacePath]);
+				break;
+			case 'stop':
+				if (!workspacePath) return;
+				await this._runCodebase(['-stop', workspacePath]);
 				break;
 			case 'stats':
 				await this._runCodebase(['-stats']);
